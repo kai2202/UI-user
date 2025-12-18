@@ -1,0 +1,39 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,600;1,600&family=Noto+Serif:wght@400;600&display=swap');
+
+* {
+	box-sizing: border-box;
+}
+
+body {
+	margin: 0;
+	font-family: "Inter", "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+	background: #0f172a;
+	color: #e2e8f0;
+}
+
+/* Extra animations used in ui.txt */
+@layer utilities {
+	.animate-float {
+		animation: float 18s linear infinite;
+	}
+
+	.animate-soft-float {
+		animation: soft-float 4s ease-in-out infinite;
+	}
+
+	.animate-wave-sweep {
+		animation: wave-sweep 2.5s ease-in-out forwards;
+	}
+
+	.animate-spin-slow {
+		animation: spin-slow 6s linear infinite;
+	}
+
+	.animate-pulse-slow {
+		animation: pulse-slow 3s ease-in-out infinite;
+	}
+}

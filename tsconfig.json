@@ -1,0 +1,20 @@
+{
+  "extends": "./tsconfig.node.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "types": ["vite/client"]
+  },
+  "include": [
+    "src",
+    "blockchain/**/*.ts",
+    "blockchain/**/*.tsx"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "src/AdminPanel.tsx",
+    "src/HrPanel.tsx",
+    "src/StudentPanel.tsx"
+  ],
+  "references": [{ "path": "./tsconfig.node.json" }]
+}
