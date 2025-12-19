@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   ArrowRight,
   Award,
@@ -8,7 +8,6 @@ import {
   Cpu,
   Database,
   ExternalLink,
-  FileCode,
   Fingerprint,
   Image as ImageIcon,
   Info,
@@ -19,6 +18,51 @@ import {
   Sparkles,
   Upload,
 } from "lucide-react";
+
+export type UserPayload = {
+  request_id: string;
+  user_wallet: string;
+  course: { course_id: string; course_name: string };
+  display_name: string;
+  completion: { completed: boolean; completed_at: string };
+  certificate_preview: { preview_url: string | null; preview_hash: string };
+  status: "pending" | "approved" | "rejected";
+  submitted_at: string;
+};
+
+export type AdminPayload = {
+  request_id: string;
+  recipient_wallet: string;
+  course: { course_id: string; course_name: string };
+  completion_status: { verified: boolean; completed_at: string };
+  certificate_preview: { preview_url: string | null; preview_hash: string };
+  admin_decision: {
+    status: "pending" | "approved" | "rejected";
+    reviewed_by: string;
+    reviewed_at: string;
+    note: string;
+  };
+};
+
+export type AdminQueueEntry = {
+  requestId: string;
+  studentName: string;
+  courseName: string;
+  courseId: string;
+  completionDate: string;
+  wallet: string;
+  certificatePreview?: string | null;
+  userPayload: UserPayload;
+  adminPayload: AdminPayload;
+};
+
+export type NotificationItem = {
+  id: string;
+  requestId: string;
+  message: string;
+  createdAt: string;
+  status: "pending" | "seen";
+};
 
 const SuiLogo: React.FC<{ className?: string }> = ({ className = "w-6 h-6" }) => (
   <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
@@ -69,83 +113,77 @@ const Navbar: React.FC<{ adminAddress: string; onExit?: () => void }> = ({ admin
   );
 };
 
-type Request = {
-  id: string;
-  studentName: string;
-  courseName: string;
-  completionDate: string;
-  wallet: string;
-};
-
-type MetadataPreviewProps = { data: Request; txHash: string };
-
-const MetadataPreview: React.FC<MetadataPreviewProps> = ({ data, txHash }) => {
-  const metadata = {
-    name: "Course Completion Certificate",
-    description: `This NFT certifies that ${data.studentName} has successfully completed a course issued by the authorized issuer.`,
-    certificate_type: "course_completion",
-    course: {
-      course_id: data.id.toLowerCase(),
-      course_name: data.courseName,
-    },
-    issuer: {
-      name: "Sui Academy",
-      issuer_type: "education_platform",
-      website: "https://sui-academy.example",
-    },
-    recipient: {
-      wallet_address: data.wallet,
-      role: "student",
-    },
-    issued_at: new Date().toISOString(),
-    network: "sui-mainnet",
-    certificate_content: {
-      content_type: "nft_object",
-      storage: "on-chain",
-      content_url: txHash ? `sui://tx/${txHash}` : "pending_mint",
-    },
-    metadata_hash: txHash ? `0x${txHash.substring(2, 22)}` : "0x_PENDING",
-    verification: {
-      verify_url: `https://sui-academy.io/verify?student=${data.wallet}`,
-      standard: "on-chain-hash-verification",
-    },
-    version: "1.1",
-  };
+const NotificationQueue: React.FC<{ items: NotificationItem[]; onMarkSeen?: (id: string) => void }> = ({ items, onMarkSeen }) => {
+  if (!items.length) {
+    return (
+      <div className="bg-white border border-slate-200 rounded-[1.5rem] p-4 text-xs text-slate-500 font-bold">
+        Chưa có thông báo mới.
+      </div>
+    );
+  }
 
   return (
-    <div className="bg-slate-900 rounded-2xl p-5 font-mono text-[10px] text-cyan-400 overflow-hidden border border-slate-800 shadow-inner max-h-[400px] overflow-y-auto custom-scrollbar">
-      <div className="flex items-center justify-between mb-3 border-b border-slate-800 pb-2 sticky top-0 bg-slate-900">
-        <span className="text-slate-500 uppercase font-bold">Standard JSON Metadata</span>
-        <FileCode className="w-3.5 h-3.5 text-slate-500" />
-      </div>
-      <pre className="whitespace-pre-wrap leading-relaxed">{JSON.stringify(metadata, null, 2)}</pre>
+    <div className="bg-white border border-slate-200 rounded-[1.5rem] p-4 space-y-3 shadow-sm">
+      {items.map((item) => (
+        <div key={item.id} className="flex items-start justify-between gap-3 p-3 rounded-xl bg-slate-50 border border-slate-100">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <Bell className="w-3.5 h-3.5 text-indigo-600" />
+              <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">{item.requestId}</span>
+            </div>
+            <p className="text-[11px] font-semibold text-slate-800 leading-tight">{item.message}</p>
+            <span className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{new Date(item.createdAt).toLocaleString("vi-VN")}</span>
+          </div>
+          <button
+            onClick={() => onMarkSeen?.(item.id)}
+            className={`text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full border transition-all ${
+              item.status === "seen"
+                ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                : "border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100"
+            }`}
+          >
+            {item.status === "seen" ? "Đã xem" : "Đánh dấu đã xem"}
+          </button>
+        </div>
+      ))}
     </div>
   );
 };
 
-const AdminView: React.FC<{ onExit?: () => void; certificateImage?: string | null }> = ({ onExit, certificateImage }) => {
-  const [selectedRequest, setSelectedRequest] = useState<Request | null>(null);
+const PayloadPreview: React.FC<{ adminPayload: AdminPayload }> = ({ adminPayload }) => (
+  <div className="bg-white border border-slate-200 rounded-[1.5rem] p-4 shadow-sm">
+    <div className="flex items-center justify-between mb-3">
+      <div className="flex items-center gap-2 text-emerald-700 text-[11px] font-black uppercase tracking-widest">
+        <Fingerprint className="w-4 h-4" />
+        <span>Payload admin (admin.txt)</span>
+      </div>
+      <span className="text-[10px] font-bold text-slate-400">Chuyển đổi off-chain</span>
+    </div>
+    <pre className="bg-slate-900 text-emerald-300 text-[10px] font-mono p-4 rounded-xl overflow-auto max-h-64 border border-slate-800">
+      {JSON.stringify(adminPayload, null, 2)}
+    </pre>
+  </div>
+);
+
+const AdminView: React.FC<{
+  onExit?: () => void;
+  certificateImage?: string | null;
+  requests?: AdminQueueEntry[];
+  notifications?: NotificationItem[];
+  onMarkNotificationSeen?: (id: string) => void;
+}> = ({ onExit, certificateImage, requests = [], notifications = [], onMarkNotificationSeen }) => {
+  const [selectedRequest, setSelectedRequest] = useState<AdminQueueEntry | null>(requests[0] ?? null);
   const [activeTab, setActiveTab] = useState<"metadata" | "image">("metadata");
   const [isMinting, setIsMinting] = useState(false);
   const [mintStatus, setMintStatus] = useState<{ success: boolean; tx: string }>({ success: false, tx: "" });
   const [uploadedImage, setUploadedImage] = useState<string | null>(null);
 
-  const requests: Request[] = [
-    {
-      id: "REQ-9901",
-      studentName: "Nguyễn Thế Khải",
-      courseName: "Fullstack Web3 & Sui Move Development",
-      completionDate: "18/12/2024",
-      wallet: "0x7a92c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8",
-    },
-    {
-      id: "REQ-9902",
-      studentName: "Lê Minh Châu",
-      courseName: "Smart Contract Security with Move",
-      completionDate: "15/12/2024",
-      wallet: "0x3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2",
-    },
-  ];
+  useEffect(() => {
+    if (requests.length && requests[0].requestId !== selectedRequest?.requestId) {
+      setSelectedRequest(requests[0]);
+      setMintStatus({ success: false, tx: "" });
+    }
+  }, [requests]);
 
   const handleMint = () => {
     if (!selectedRequest) return;
@@ -163,6 +201,22 @@ const AdminView: React.FC<{ onExit?: () => void; certificateImage?: string | nul
     const file = e.target.files?.[0];
     if (file) setUploadedImage(URL.createObjectURL(file));
   };
+
+  const effectivePreviewUrl =
+    selectedRequest?.adminPayload.certificate_preview?.preview_url ||
+    selectedRequest?.certificatePreview ||
+    certificateImage ||
+    null;
+
+  const adminPayloadWithPreview: AdminPayload | null = selectedRequest
+    ? {
+        ...selectedRequest.adminPayload,
+        certificate_preview: {
+          preview_url: effectivePreviewUrl,
+          preview_hash: selectedRequest.adminPayload.certificate_preview?.preview_hash || selectedRequest.userPayload?.certificate_preview?.preview_hash || "",
+        },
+      }
+    : null;
 
   return (
     <div className="min-h-screen bg-[#f1f5f9] text-slate-800 font-sans antialiased overflow-x-hidden">
@@ -183,17 +237,17 @@ const AdminView: React.FC<{ onExit?: () => void; certificateImage?: string | nul
               <div className="space-y-3">
                 {requests.map((req) => (
                   <button
-                    key={req.id}
+                    key={req.requestId}
                     onClick={() => {
                       setSelectedRequest(req);
                       setMintStatus({ success: false, tx: "" });
                     }}
                     className={`w-full text-left p-4 rounded-2xl border-2 transition-all ${
-                      selectedRequest?.id === req.id ? "border-indigo-600 bg-indigo-50/30 shadow-md" : "border-slate-50 bg-slate-50 hover:border-slate-200"
+                      selectedRequest?.requestId === req.requestId ? "border-indigo-600 bg-indigo-50/30 shadow-md" : "border-slate-50 bg-slate-50 hover:border-slate-200"
                     }`}
                   >
                     <div className="flex justify-between items-start mb-1">
-                      <span className="text-[9px] font-black text-slate-400 uppercase">{req.id}</span>
+                      <span className="text-[9px] font-black text-slate-400 uppercase">{req.requestId}</span>
                       <Clock className="w-3 h-3 text-slate-300" />
                     </div>
                     <p className="font-black text-slate-900 truncate text-sm">{req.studentName}</p>
@@ -231,6 +285,17 @@ const AdminView: React.FC<{ onExit?: () => void; certificateImage?: string | nul
                 </div>
               </div>
             </div>
+
+            <div className="bg-white border border-slate-200 rounded-[2rem] p-6 shadow-sm">
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-sm font-black text-slate-900 uppercase tracking-widest flex items-center">
+                  <Bell className="w-4 h-4 mr-2 text-indigo-600" />
+                  Thông báo queue
+                </h3>
+                <div className="px-2 py-0.5 bg-slate-100 text-slate-600 text-[9px] font-black rounded-full">{notifications.length}</div>
+              </div>
+              <NotificationQueue items={notifications} onMarkSeen={onMarkNotificationSeen} />
+            </div>
           </div>
 
           <div className="lg:col-span-8">
@@ -257,138 +322,137 @@ const AdminView: React.FC<{ onExit?: () => void; certificateImage?: string | nul
                   </button>
                 </div>
 
-                <div className="grid md:grid-cols-2 gap-6">
-                  <div className="space-y-6">
-                    <div className="bg-white border border-slate-200 rounded-[2rem] p-6 shadow-sm h-full flex flex-col">
-                      <div className="flex justify-between items-start mb-6">
-                        <div className="w-10 h-10 bg-slate-100 rounded-lg flex items-center justify-center">
-                          <SuiLogo className="text-slate-900 w-6 h-6" />
-                        </div>
-                        <Award className="text-indigo-500 w-10 h-10" />
+                <div className="space-y-6">
+                  <div className="bg-white border border-slate-200 rounded-[2rem] p-6 shadow-sm flex flex-col">
+                    <div className="flex justify-between items-start mb-6">
+                      <div className="w-10 h-10 bg-slate-100 rounded-lg flex items-center justify-center">
+                        <SuiLogo className="text-slate-900 w-6 h-6" />
                       </div>
+                      <Award className="text-indigo-500 w-10 h-10" />
+                    </div>
 
-                      <div className="text-center space-y-4 mb-8 flex-1 flex flex-col justify-center">
-                        <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Bản xem trước chứng chỉ</p>
-                        {certificateImage ? (
-                          <div className="relative w-full overflow-hidden rounded-2xl border border-slate-100 bg-slate-50 shadow-sm">
-                            <img src={certificateImage} alt="Certificate Preview" className="w-full h-full object-contain" />
-                          </div>
-                        ) : (
-                          <>
-                            <h2 className="text-2xl font-serif italic text-slate-900">{selectedRequest.studentName}</h2>
-                            <div className="h-px w-16 bg-slate-100 mx-auto" />
-                            <p className="text-xs font-bold text-slate-600 leading-tight uppercase tracking-tighter">{selectedRequest.courseName}</p>
-                          </>
-                        )}
+                    <div className="text-center space-y-4 mb-8 flex-1 flex flex-col justify-center">
+                      <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Bản xem trước chứng chỉ</p>
+                      {selectedRequest.certificatePreview || certificateImage ? (
+                        <div className="relative w-full overflow-hidden rounded-2xl border border-slate-100 bg-slate-50 shadow-sm">
+                          <img
+                            src={selectedRequest.certificatePreview || certificateImage || ""}
+                            alt="Certificate Preview"
+                            className="w-full h-full object-contain"
+                          />
+                        </div>
+                      ) : (
+                        <>
+                          <h2 className="text-2xl font-serif italic text-slate-900">{selectedRequest.studentName}</h2>
+                          <div className="h-px w-16 bg-slate-100 mx-auto" />
+                          <p className="text-xs font-bold text-slate-600 leading-tight uppercase tracking-tighter">{selectedRequest.courseName}</p>
+                        </>
+                      )}
+                    </div>
+
+                    <div className="mt-6 space-y-2 pt-4 border-t border-slate-50">
+                      <div className="flex justify-between text-[9px] font-bold">
+                        <span className="text-slate-400 uppercase tracking-tighter">Ví sinh viên</span>
+                        <span className="text-slate-900 font-mono truncate max-w-[120px]">{selectedRequest.wallet}</span>
                       </div>
-
-                      <div className="mt-6 space-y-2 pt-4 border-t border-slate-50">
-                        <div className="flex justify-between text-[9px] font-bold">
-                          <span className="text-slate-400 uppercase tracking-tighter">Ví sinh viên</span>
-                          <span className="text-slate-900 font-mono truncate max-w-[120px]">{selectedRequest.wallet}</span>
-                        </div>
-                        <div className="flex justify-between text-[9px] font-bold">
-                          <span className="text-slate-400 uppercase tracking-tighter">Ngày hoàn thành</span>
-                          <span className="text-slate-900">{selectedRequest.completionDate}</span>
-                        </div>
+                      <div className="flex justify-between text-[9px] font-bold">
+                        <span className="text-slate-400 uppercase tracking-tighter">Ngày hoàn thành</span>
+                        <span className="text-slate-900">{selectedRequest.completionDate}</span>
                       </div>
                     </div>
                   </div>
 
-                  <div className="space-y-6">
-                    {activeTab === "metadata" ? (
-                      <div className="bg-white border border-slate-200 rounded-[2rem] p-6 shadow-sm h-full flex flex-col">
-                        <h3 className="text-xs font-black text-slate-900 uppercase tracking-widest mb-6 flex items-center">
-                          <Fingerprint className="w-4 h-4 mr-2 text-indigo-600" />
-                          Đúc Dữ liệu Blockchain
-                        </h3>
+                  {activeTab === "metadata" ? (
+                    <div className="bg-white border border-slate-200 rounded-[2rem] p-6 shadow-sm flex flex-col">
+                      <h3 className="text-xs font-black text-slate-900 uppercase tracking-widest mb-6 flex items-center">
+                        <Fingerprint className="w-4 h-4 mr-2 text-indigo-600" />
+                        Đúc Dữ liệu Blockchain
+                      </h3>
 
-                        <div className="flex-1">
-                          <MetadataPreview data={selectedRequest} txHash={mintStatus.tx} />
+                      <div className="flex-1 space-y-4">
+                        <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                          <p className="text-[9px] text-slate-500 font-bold leading-relaxed italic">
+                            Payload gửi admin (admin.txt) sẽ được dùng cho bước đúc, không hiển thị metadata mẫu.
+                          </p>
+                        </div>
+                        {adminPayloadWithPreview && <PayloadPreview adminPayload={adminPayloadWithPreview} />}
+                      </div>
 
-                          <div className="mt-4 p-4 bg-slate-50 rounded-2xl border border-slate-100">
-                            <p className="text-[9px] text-slate-500 font-bold leading-relaxed italic">
-                              Thông tin được đóng gói theo chuẩn JSON v1.1 của Sui Academy. Không bao gồm dữ liệu điểm số theo yêu cầu.
+                      <button
+                        onClick={handleMint}
+                        disabled={isMinting || mintStatus.success}
+                        className={`mt-6 w-full flex items-center justify-center space-x-3 py-4 rounded-xl font-black text-xs uppercase tracking-widest shadow-xl transition-all active:scale-95 ${
+                          mintStatus.success ? "bg-emerald-500 text-white" : "bg-slate-900 text-white hover:bg-black shadow-slate-200"
+                        }`}
+                      >
+                        {isMinting ? (
+                          <>
+                            <Loader2 className="animate-spin size-4" /> <span>Đang xử lý...</span>
+                          </>
+                        ) : mintStatus.success ? (
+                          <>
+                            <CheckCircle2 size={16} /> <span>Đã đúc xong</span>
+                          </>
+                        ) : (
+                          <>
+                            <Rocket size={16} /> <span>Xác nhận & Mint NFT</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="bg-white border border-slate-200 rounded-[2rem] p-6 shadow-sm flex flex-col">
+                      <h3 className="text-xs font-black text-slate-900 uppercase tracking-widest mb-6 flex items-center">
+                        <ImageIcon className="w-4 h-4 mr-2 text-indigo-600" />
+                        Đúc NFT từ Hình ảnh
+                      </h3>
+
+                      <div className="flex-1 space-y-6">
+                        <div
+                          className={`relative aspect-video rounded-2xl border-2 border-dashed flex flex-col items-center justify-center overflow-hidden transition-all ${
+                            uploadedImage ? "border-indigo-400 bg-white" : "border-slate-200 bg-slate-50"
+                          }`}
+                        >
+                          {uploadedImage ? (
+                            <img src={uploadedImage} className="w-full h-full object-cover" alt="NFT Preview" />
+                          ) : (
+                            <div className="text-center p-6">
+                              <Upload className="w-8 h-8 text-slate-300 mx-auto mb-3" />
+                              <p className="text-[10px] font-bold text-slate-400 uppercase">Tải lên thiết kế chứng chỉ</p>
+                              <input type="file" onChange={handleImageUpload} className="absolute inset-0 opacity-0 cursor-pointer" />
+                            </div>
+                          )}
+                          {uploadedImage && (
+                            <button
+                              onClick={() => setUploadedImage(null)}
+                              className="absolute top-2 right-2 bg-black/60 text-white px-2 py-1 rounded-lg text-[8px] uppercase font-bold backdrop-blur-sm"
+                            >
+                              Thay đổi
+                            </button>
+                          )}
+                        </div>
+
+                        <div className="p-4 bg-indigo-50 border border-indigo-100 rounded-2xl">
+                          <div className="flex items-start space-x-2 text-indigo-700">
+                            <Info size={14} className="mt-0.5 flex-shrink-0" />
+                            <p className="text-[9px] leading-relaxed font-bold">
+                              Hình ảnh sẽ được đúc thành NFT hình ảnh thuần túy, định danh qua tên học viên và mã khóa học.
                             </p>
                           </div>
                         </div>
-
-                        <button
-                          onClick={handleMint}
-                          disabled={isMinting || mintStatus.success}
-                          className={`mt-6 w-full flex items-center justify-center space-x-3 py-4 rounded-xl font-black text-xs uppercase tracking-widest shadow-xl transition-all active:scale-95 ${
-                            mintStatus.success ? "bg-emerald-500 text-white" : "bg-slate-900 text-white hover:bg-black shadow-slate-200"
-                          }`}
-                        >
-                          {isMinting ? (
-                            <>
-                              <Loader2 className="animate-spin size-4" /> <span>Đang xử lý...</span>
-                            </>
-                          ) : mintStatus.success ? (
-                            <>
-                              <CheckCircle2 size={16} /> <span>Đã đúc xong</span>
-                            </>
-                          ) : (
-                            <>
-                              <Rocket size={16} /> <span>Xác nhận & Mint NFT</span>
-                            </>
-                          )}
-                        </button>
                       </div>
-                    ) : (
-                      <div className="bg-white border border-slate-200 rounded-[2rem] p-6 shadow-sm h-full flex flex-col">
-                        <h3 className="text-xs font-black text-slate-900 uppercase tracking-widest mb-6 flex items-center">
-                          <ImageIcon className="w-4 h-4 mr-2 text-indigo-600" />
-                          Đúc NFT từ Hình ảnh
-                        </h3>
 
-                        <div className="flex-1 space-y-6">
-                          <div
-                            className={`relative aspect-video rounded-2xl border-2 border-dashed flex flex-col items-center justify-center overflow-hidden transition-all ${
-                              uploadedImage ? "border-indigo-400 bg-white" : "border-slate-200 bg-slate-50"
-                            }`}
-                          >
-                            {uploadedImage ? (
-                              <img src={uploadedImage} className="w-full h-full object-cover" alt="NFT Preview" />
-                            ) : (
-                              <div className="text-center p-6">
-                                <Upload className="w-8 h-8 text-slate-300 mx-auto mb-3" />
-                                <p className="text-[10px] font-bold text-slate-400 uppercase">Tải lên thiết kế chứng chỉ</p>
-                                <input type="file" onChange={handleImageUpload} className="absolute inset-0 opacity-0 cursor-pointer" />
-                              </div>
-                            )}
-                            {uploadedImage && (
-                              <button
-                                onClick={() => setUploadedImage(null)}
-                                className="absolute top-2 right-2 bg-black/60 text-white px-2 py-1 rounded-lg text-[8px] uppercase font-bold backdrop-blur-sm"
-                              >
-                                Thay đổi
-                              </button>
-                            )}
-                          </div>
-
-                          <div className="p-4 bg-indigo-50 border border-indigo-100 rounded-2xl">
-                            <div className="flex items-start space-x-2 text-indigo-700">
-                              <Info size={14} className="mt-0.5 flex-shrink-0" />
-                              <p className="text-[9px] leading-relaxed font-bold">
-                                Hình ảnh sẽ được đúc thành NFT hình ảnh thuần túy, định danh qua tên học viên và mã khóa học.
-                              </p>
-                            </div>
-                          </div>
-                        </div>
-
-                        <button
-                          disabled={!uploadedImage || isMinting}
-                          className={`mt-6 w-full flex items-center justify-center space-x-3 py-4 rounded-xl font-black text-xs uppercase tracking-widest shadow-xl transition-all active:scale-95 ${
-                            !uploadedImage ? "bg-slate-100 text-slate-300" : "bg-indigo-600 text-white hover:bg-indigo-700 shadow-indigo-100"
-                          }`}
-                        >
-                          <Rocket size={16} />
-                          <span>Đúc NFT Hình ảnh</span>
-                        </button>
-                      </div>
-                    )}
-                  </div>
+                      <button
+                        disabled={!uploadedImage || isMinting}
+                        className={`mt-6 w-full flex items-center justify-center space-x-3 py-4 rounded-xl font-black text-xs uppercase tracking-widest shadow-xl transition-all active:scale-95 ${
+                          !uploadedImage ? "bg-slate-100 text-slate-300" : "bg-indigo-600 text-white hover:bg-indigo-700 shadow-indigo-100"
+                        }`}
+                      >
+                        <Rocket size={16} />
+                        <span>Đúc NFT Hình ảnh</span>
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 {mintStatus.success && (

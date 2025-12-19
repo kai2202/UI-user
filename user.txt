@@ -1,15 +1,17 @@
 {
   "request_id": "",
 
-  "recipient_wallet": "",
+  "user_wallet": "",
 
   "course": {
     "course_id": "",
     "course_name": ""
   },
 
-  "completion_status": {
-    "verified": false,
+  "display_name": "",
+
+  "completion": {
+    "completed": false,
     "completed_at": ""
   },
 
@@ -18,10 +20,7 @@
     "preview_hash": ""
   },
 
-  "admin_decision": {
-    "status": "pending",
-    "reviewed_by": "",
-    "reviewed_at": "",
-    "note": ""
-  }
+  "status": "pending",
+
+  "submitted_at": ""
 }

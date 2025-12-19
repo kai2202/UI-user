@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowRight,
   Award,
@@ -15,7 +15,7 @@ import {
   Waves,
 } from "lucide-react";
 import { SuiProviders, useSlushWallet } from "../blockchain/wallet";
-import AdminView from "./AdminView";
+import AdminView, { AdminPayload, AdminQueueEntry, NotificationItem, UserPayload } from "./AdminView";
 declare global {
   interface Window {
     confetti?: (options: Record<string, unknown>) => void;
@@ -239,8 +239,95 @@ const CertificateCard: React.FC<{ studentName: string; courseName: string; date:
   </div>
   );
 };
+const COURSE_INFO = { id: "course-fullstack-sui", name: "Fullstack Web3 & Sui Move Development" };
+const STORAGE_KEYS = {
+  queue: "cert_admin_queue",
+  notifications: "cert_notifications_queue",
+};
 
-const AppContent: React.FC<{ onEnterAdmin?: (preview?: string | null) => void }> = ({ onEnterAdmin }) => {
+const createPreviewHash = (input: string) => {
+  let hash = 0;
+  for (let i = 0; i < input.length; i += 1) {
+    hash = (hash << 5) - hash + input.charCodeAt(i);
+    hash |= 0;
+  }
+  return `h_${Math.abs(hash).toString(16)}`;
+};
+
+const normalizeEntry = (entry: any): AdminQueueEntry => {
+  const requestId = entry.requestId || entry.id || `REQ-${Date.now()}`;
+  const courseId = entry.courseId || entry.course?.course_id || COURSE_INFO.id;
+  const courseName = entry.courseName || entry.course?.course_name || COURSE_INFO.name;
+  const wallet = entry.wallet || entry.recipient_wallet || entry.user_wallet || "";
+  const displayName = entry.userPayload?.display_name || entry.studentName || "";
+  const completionDate = entry.completionDate || entry.completion?.completed_at || new Date().toISOString();
+  const previewUrl =
+    entry.certificatePreview ||
+    entry.certificate_preview?.preview_url ||
+    entry.userPayload?.certificate_preview?.preview_url ||
+    entry.adminPayload?.certificate_preview?.preview_url ||
+    null;
+  const previewHash =
+    entry.certificate_preview?.preview_hash ||
+    entry.userPayload?.certificate_preview?.preview_hash ||
+    entry.adminPayload?.certificate_preview?.preview_hash ||
+    (previewUrl ? createPreviewHash(`${requestId}-${wallet}-${previewUrl}`) : "");
+
+  const userPayload: UserPayload = entry.userPayload
+    ? {
+        ...entry.userPayload,
+        certificate_preview: {
+          preview_url: entry.userPayload.certificate_preview?.preview_url || previewUrl,
+          preview_hash: entry.userPayload.certificate_preview?.preview_hash || previewHash,
+        },
+      }
+    : {
+        request_id: requestId,
+        user_wallet: wallet,
+        course: { course_id: courseId, course_name: courseName },
+        display_name: displayName,
+        completion: { completed: true, completed_at: completionDate },
+        certificate_preview: { preview_url: previewUrl, preview_hash: previewHash },
+        status: "pending",
+        submitted_at: completionDate,
+      };
+
+  const adminPayload: AdminPayload = entry.adminPayload
+    ? {
+        ...entry.adminPayload,
+        certificate_preview: {
+          preview_url: entry.adminPayload.certificate_preview?.preview_url || previewUrl,
+          preview_hash: entry.adminPayload.certificate_preview?.preview_hash || previewHash,
+        },
+      }
+    : {
+        request_id: requestId,
+        recipient_wallet: wallet,
+        course: { course_id: courseId, course_name: courseName },
+        completion_status: { verified: true, completed_at: completionDate },
+        certificate_preview: { preview_url: previewUrl, preview_hash: previewHash },
+        admin_decision: { status: "pending", reviewed_by: "", reviewed_at: "", note: "" },
+      };
+
+  return {
+    requestId,
+    studentName: displayName || entry.studentName || "",
+    courseName,
+    courseId,
+    completionDate,
+    wallet,
+    certificatePreview: previewUrl,
+    userPayload,
+    adminPayload,
+  };
+};
+
+const AppContent: React.FC<{
+  onEnterAdmin?: (preview?: string | null) => void;
+  onQueueSubmission?: (entry: AdminQueueEntry) => void;
+  onQueueNotification?: (notification: NotificationItem) => void;
+  course: { id: string; name: string };
+}> = ({ onEnterAdmin, onQueueSubmission, onQueueNotification, course }) => {
   const { currentAccount, connectSlush, disconnectWallet, isConnecting, isDisconnecting } = useSlushWallet();
   const wallet = currentAccount?.address ?? null;
   const certificateRef = useRef<HTMLDivElement>(null);
@@ -250,6 +337,7 @@ const AppContent: React.FC<{ onEnterAdmin?: (preview?: string | null) => void }>
   const [isSuccess, setIsSuccess] = useState(false);
   const [txHash, setTxHash] = useState("");
   const [currentStep, setCurrentStep] = useState(1);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
     const script = document.createElement("script");
@@ -343,6 +431,17 @@ const AppContent: React.FC<{ onEnterAdmin?: (preview?: string | null) => void }>
     pdf.save("certificate.pdf");
   };
 
+  const capturePreview = useCallback(async (): Promise<string | null> => {
+    if (!certificateRef.current) return null;
+    const { default: html2canvas } = await import("html2canvas");
+    const canvas = await html2canvas(certificateRef.current, {
+      scale: 2,
+      backgroundColor: "#ffffff",
+      useCORS: true,
+    });
+    return canvas.toDataURL("image/png");
+  }, []);
+
   const handleMint = () => {
     if (!wallet || !studentName) return;
     setIsMinting(true);
@@ -353,19 +452,64 @@ const AppContent: React.FC<{ onEnterAdmin?: (preview?: string | null) => void }>
     }, 2800);
   };
 
+  const handleSendConfirmation = async () => {
+    if (!wallet || !isSuccess || !studentName) return;
+    setIsSubmitting(true);
+    try {
+      const previewUrl = await capturePreview();
+      const requestId = `REQ-${Date.now()}`;
+      const submittedAt = new Date().toISOString();
+      const previewHash = createPreviewHash(`${requestId}-${wallet}-${previewUrl ?? ""}`);
+
+      const userPayload: UserPayload = {
+        request_id: requestId,
+        user_wallet: wallet,
+        course: { course_id: course.id, course_name: course.name },
+        display_name: studentName,
+        completion: { completed: true, completed_at: submittedAt },
+        certificate_preview: { preview_url: previewUrl, preview_hash: previewHash },
+        status: "pending",
+        submitted_at: submittedAt,
+      };
+
+      const adminPayload: AdminPayload = {
+        request_id: requestId,
+        recipient_wallet: wallet,
+        course: { course_id: course.id, course_name: course.name },
+        completion_status: { verified: true, completed_at: submittedAt },
+        certificate_preview: { preview_url: previewUrl, preview_hash: previewHash },
+        admin_decision: { status: "pending", reviewed_by: "", reviewed_at: "", note: "" },
+      };
+
+      const entry: AdminQueueEntry = {
+        requestId,
+        studentName,
+        courseName: course.name,
+        courseId: course.id,
+        completionDate: issueDate || new Date().toLocaleDateString("vi-VN"),
+        wallet,
+        certificatePreview: previewUrl,
+        userPayload,
+        adminPayload,
+      };
+
+      const notification: NotificationItem = {
+        id: `NOTI-${requestId}`,
+        requestId,
+        message: `Học viên ${studentName} gửi yêu cầu xác nhận khóa ${course.name}.`,
+        createdAt: submittedAt,
+        status: "pending",
+      };
+
+      onQueueSubmission?.(entry);
+      onQueueNotification?.(notification);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const handleAdminClick = async () => {
     const enterAdmin = (preview?: string | null) => onEnterAdmin?.(preview ?? null);
-
-    const capturePreview = async (): Promise<string | null> => {
-      if (!certificateRef.current) return null;
-      const { default: html2canvas } = await import("html2canvas");
-      const canvas = await html2canvas(certificateRef.current, {
-        scale: 2,
-        backgroundColor: "#ffffff",
-        useCORS: true,
-      });
-      return canvas.toDataURL("image/png");
-    };
 
     const proceed = async () => {
       const preview = await capturePreview();
@@ -443,7 +587,7 @@ const AppContent: React.FC<{ onEnterAdmin?: (preview?: string | null) => void }>
           <div className="lg:col-span-8 space-y-8">
             <CertificateCard
               studentName={studentName}
-              courseName="Fullstack Web3 & Sui Move Development"
+              courseName={course.name}
               date={issueDate || "--"}
               txHash={txHash}
               isSuccess={isSuccess}
@@ -506,9 +650,15 @@ const AppContent: React.FC<{ onEnterAdmin?: (preview?: string | null) => void }>
                     </button>
                   ) : (
                     <div className="space-y-3 animate-in slide-in-from-bottom duration-500">
-                      <button className="w-full bg-emerald-600 text-white px-6 py-4 rounded-2xl font-bold flex items-center justify-center space-x-2 shadow-lg shadow-emerald-100 hover:bg-emerald-700 transition-all active:scale-95">
-                        <ExternalLink className="w-5 h-5" />
-                        <span>Gửi Xác Nhận</span>
+                      <button
+                        onClick={handleSendConfirmation}
+                        disabled={isSubmitting}
+                        className={`w-full px-6 py-4 rounded-2xl font-bold flex items-center justify-center space-x-2 shadow-lg transition-all active:scale-95 ${
+                          isSubmitting ? "bg-emerald-200 text-emerald-800" : "bg-emerald-600 text-white hover:bg-emerald-700 shadow-emerald-100"
+                        }`}
+                      >
+                        {isSubmitting ? <Loader2 className="w-5 h-5 animate-spin" /> : <ExternalLink className="w-5 h-5" />}
+                        <span>{isSubmitting ? "Đang gửi..." : "Gửi Xác Nhận"}</span>
                       </button>
                       <div className="grid grid-cols-2 gap-3">
                         <button
@@ -588,13 +738,78 @@ const AppContent: React.FC<{ onEnterAdmin?: (preview?: string | null) => void }>
 const App = () => {
   const [adminMode, setAdminMode] = useState(false);
   const [certificatePreview, setCertificatePreview] = useState<string | null>(null);
+  const [adminQueue, setAdminQueue] = useState<AdminQueueEntry[]>([]);
+  const [notificationQueue, setNotificationQueue] = useState<NotificationItem[]>([]);
+
+  useEffect(() => {
+    try {
+      const storedQueue = localStorage.getItem(STORAGE_KEYS.queue);
+      const storedNotifications = localStorage.getItem(STORAGE_KEYS.notifications);
+      if (storedQueue) setAdminQueue(JSON.parse(storedQueue).map(normalizeEntry));
+      if (storedNotifications) setNotificationQueue(JSON.parse(storedNotifications));
+    } catch (error) {
+      console.warn("Không đọc được dữ liệu queue từ localStorage", error);
+    }
+  }, []);
+
+  useEffect(() => {
+    const handleStorage = (event: StorageEvent) => {
+      try {
+        if (event.key === STORAGE_KEYS.queue && event.newValue) {
+          setAdminQueue(JSON.parse(event.newValue).map(normalizeEntry));
+        }
+        if (event.key === STORAGE_KEYS.notifications && event.newValue) {
+          setNotificationQueue(JSON.parse(event.newValue));
+        }
+      } catch (error) {
+        console.warn("Không đồng bộ được dữ liệu queue từ storage", error);
+      }
+    };
+
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, []);
+
+  const handleQueueSubmission = (entry: AdminQueueEntry) => {
+    const normalized = normalizeEntry(entry);
+    setAdminQueue((prev) => {
+      const next = [normalized, ...prev];
+      localStorage.setItem(STORAGE_KEYS.queue, JSON.stringify(next));
+      return next;
+    });
+  };
+
+  const handleQueueNotification = (notification: NotificationItem) => {
+    setNotificationQueue((prev) => {
+      const next = [notification, ...prev];
+      localStorage.setItem(STORAGE_KEYS.notifications, JSON.stringify(next));
+      return next;
+    });
+  };
+
+  const handleMarkNotificationSeen = (id: string) => {
+    setNotificationQueue((prev) => {
+      const next = prev.map((item) => (item.id === id ? { ...item, status: "seen" } : item));
+      localStorage.setItem(STORAGE_KEYS.notifications, JSON.stringify(next));
+      return next;
+    });
+  };
 
   return (
     <SuiProviders>
       {adminMode ? (
-        <AdminView certificateImage={certificatePreview} onExit={() => setAdminMode(false)} />
+        <AdminView
+          certificateImage={certificatePreview}
+          onExit={() => setAdminMode(false)}
+          requests={adminQueue}
+          notifications={notificationQueue}
+          onMarkNotificationSeen={handleMarkNotificationSeen}
+        />
       ) : (
         <AppContent
+          course={COURSE_INFO}
+          onQueueSubmission={handleQueueSubmission}
+          onQueueNotification={handleQueueNotification}
           onEnterAdmin={(preview) => {
             setCertificatePreview(preview ?? null);
             setAdminMode(true);
